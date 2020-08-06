@@ -89,6 +89,7 @@ type Conn struct {
 	eventChan      chan Event
 	eventCallback  EventCallback // may be nil
 	shouldQuit     chan struct{}
+	wg             sync.WaitGroup
 	pingInterval   time.Duration
 	recvTimeout    time.Duration
 	connectTimeout time.Duration
@@ -226,11 +227,13 @@ func Connect(servers []string, sessionTimeout time.Duration, options ...connOpti
 
 	conn.setTimeouts(int32(sessionTimeout / time.Millisecond))
 
+	conn.wg.Add(1)
 	go func() {
 		conn.loop()
 		conn.flushRequests(ErrClosing)
 		conn.invalidateWatches(ErrClosing)
 		close(conn.eventChan)
+		conn.wg.Done()
 	}()
 	return conn, ec, nil
 }
@@ -323,6 +326,8 @@ func (c *Conn) Close() {
 	case <-c.queueRequest(opClose, &closeRequest{}, &closeResponse{}, nil):
 	case <-time.After(time.Second):
 	}
+
+	c.wg.Wait()
 }
 
 // State returns the current state of the connection.
@@ -604,6 +609,7 @@ func (c *Conn) invalidateWatches(err error) {
 		c.watchers = make(map[WatchPathType]map[*Watcher]bool)
 	}
 }
+
 func (c *Conn) invalidateWatcher(w *Watcher, err error) {
 	ev := Event{Type: EventNotWatching, State: c.state, Path: w.Wpt.Path, Err: err}
 	select {
@@ -612,6 +618,7 @@ func (c *Conn) invalidateWatcher(w *Watcher, err error) {
 	default:
 	}
 }
+
 func (c *Conn) sendSetWatches() {
 	c.watchersLock.Lock()
 	defer c.watchersLock.Unlock()
@@ -1178,6 +1185,7 @@ func (c *Conn) GetACL(path string) ([]ACL, *Stat, error) {
 	_, err := c.request(opGetAcl, &getAclRequest{Path: path}, res, nil)
 	return res.Acl, &res.Stat, err
 }
+
 func (c *Conn) SetACL(path string, acl []ACL, version int32) (*Stat, error) {
 	if err := validatePath(path, false); err != nil {
 		return nil, err
